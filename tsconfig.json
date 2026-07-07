@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "node16",                  /* KUNCI PERBAIKAN: Ubah dari CommonJS ke node16 */
+    "moduleResolution": "node16",          /* Sudah benar, biarkan tetap node16 */
+    "types": ["node"],
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "strict": true,
+    "skipLibCheck": true
+  },
+  "include": [
+    "src/**/*"
+  ]
+}
