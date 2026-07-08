@@ -88,9 +88,10 @@ program
       zipBar.update(100);
       zipBar.stop();
       console.log(chalk.green(`✅ File backup berhasil dibuat: ${chalk.yellow(path.basename(zipPath))}`));
-    } catch (error) {
+    } catch (error: any) {
       zipBar.stop();
       console.log(chalk.red('❌ Gagal mengompres proyek.'));
+      console.log(chalk.red(`Detail error: ${error.stack || error.message || error}`));
       return;
     }
 
