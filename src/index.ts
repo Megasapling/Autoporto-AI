@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-
+import * as cliProgress from 'cli-progress';   // <--- tambahkan baris ini
 import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
@@ -67,18 +67,34 @@ program
       }
     }
 
-    // 4. Kompresi ZIP
-    const zipSpinner = ora('Mengompres file proyek (mengabaikan node_modules)...').start();
+        // 4. Kompresi ZIP dengan Progress Bar
+    console.log(chalk.cyan('\n📦 Mengompres proyek...'));
+    const zipBar = new cliProgress.SingleBar({
+      format: 'Progress | {bar} | {percentage}% | {value}/{total} files',
+      barCompleteChar: '\u2588',
+      barIncompleteChar: '\u2591',
+      hideCursor: true,
+    });
+
     let zipPath: string;
     try {
-      zipPath = await zipProject();
-      zipSpinner.succeed(`File backup bersih berhasil dibuat: ${chalk.yellow(path.basename(zipPath))}`);
+      // Mulai bar (total 100, diisi 0)
+      zipBar.start(100, 0);
+      zipPath = await zipProject((percent, total, processed) => {
+        zipBar.update(percent);
+        // Opsional: update teks di bar dengan jumlah file
+        zipBar.update({ total: total, value: processed });
+      });
+      zipBar.update(100);
+      zipBar.stop();
+      console.log(chalk.green(`✅ File backup berhasil dibuat: ${chalk.yellow(path.basename(zipPath))}`));
     } catch (error) {
-      zipSpinner.fail(chalk.red('Gagal mengompres proyek.'));
+      zipBar.stop();
+      console.log(chalk.red('❌ Gagal mengompres proyek.'));
       return;
     }
 
-    // 5. Upload ke Google Drive dengan pengecekan duplikat
+    // 5. Upload ke Google Drive dengan Progress Bar
     try {
       const authSpinner = ora('Mempersiapkan koneksi ke Google Drive...').start();
       const authClient = await getAuthenticatedClient();
@@ -92,12 +108,10 @@ program
 
       if (fileId) {
         console.log(chalk.yellow(`\n⚠️  File "${fileName}" sudah ada di Google Drive.`));
-
         const rl = readline.createInterface({
           input: process.stdin,
           output: process.stdout,
         });
-
         const answer = await new Promise<string>((resolve) => {
           rl.question(
             chalk.cyan('Pilih aksi: (o)verwrite, (s)kip, (r)ename dengan timestamp: '),
@@ -125,24 +139,32 @@ program
       }
 
       if (shouldUpload) {
-        const uploadSpinner = ora(`Mengunggah ${finalFileName} ke Google Drive...`).start();
+        console.log(chalk.cyan(`\n☁️  Mengunggah ${finalFileName} ke Google Drive...`));
+        const uploadBar = new cliProgress.SingleBar({
+          format: 'Upload | {bar} | {percentage}%',
+          barCompleteChar: '\u2588',
+          barIncompleteChar: '\u2591',
+          hideCursor: true,
+        });
+        uploadBar.start(100, 0);
+
         const driveLink = await uploadToDrive(
           authClient,
           zipPath,
           finalFileName,
           (percent: number) => {
-            uploadSpinner.text = `Mengunggah ${finalFileName}... ${percent}%`;
+            uploadBar.update(percent);
           }
         );
-        uploadSpinner.succeed(`Backup otomatis diamankan di Cloud! ☁️\n   Cek di sini: ${chalk.blue.underline(driveLink)}`);
+        uploadBar.update(100);
+        uploadBar.stop();
+        console.log(chalk.green(`✅ Backup otomatis diamankan di Cloud! ☁️\n   Cek di sini: ${chalk.blue.underline(driveLink)}`));
       } else {
         console.log(chalk.gray('💡 File ZIP tetap tersimpan di lokal.'));
       }
     } catch (error: any) {
       console.log(chalk.redBright(`\n[ERROR UPLOAD]: ${error.stack || error.message || error}\n`));
     }
-
-    console.log(chalk.cyan.bold('\n✨ Semua proses selesai! Proyek Anda aman, rapi, dan siap jadi portofolio.\n'));
   });
 
 program.parse(process.argv);
