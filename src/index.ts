@@ -5,11 +5,20 @@ import chalk from 'chalk';
 import ora from 'ora';
 import * as fs from 'fs';
 import * as path from 'path';
-import { generateReadme } from './ai.js';           /* PERBAIKAN: Ditambahkan .js */
-import { detectTechStack } from './scanner.js';     /* PERBAIKAN: Ditambahkan .js */
-import { setupGitAndCommit } from './git.js';       /* PERBAIKAN: Ditambahkan .js */
-import { zipProject } from './backup.js';           /* PERBAIKAN: Ditambahkan .js */
-import { uploadToDrive } from './drive.js';         /* PERBAIKAN: Ditambahkan .js */
+import * as readline from 'readline';
+
+// Semua fungsi dari drive.ts digabung dalam satu import
+import {
+  getAuthenticatedClient,
+  findFileInDrive,
+  deleteFileInDrive,
+  uploadToDrive
+} from './drive.js';
+
+import { generateReadme } from './ai.js';
+import { detectTechStack } from './scanner.js';
+import { setupGitAndCommit } from './git.js';
+import { zipProject } from './backup.js';
 
 const program = new Command();
 
@@ -23,13 +32,13 @@ program
   .description('Analisis kode, buat README, inisialisasi Git, dan siapkan Cloud Backup')
   .action(async () => {
     console.log(chalk.cyan.bold('\n🚀 Menjalankan AutoPorto AI...\n'));
-    
-    // 1. Memindai Tech Stack
+
+    // 1. Scan tech stack
     const scanSpinner = ora('Menganalisis file dan tech stack proyek...').start();
     const { stack, description } = detectTechStack();
     scanSpinner.succeed(`Tech stack terdeteksi: ${chalk.green(stack.join(', '))}`);
 
-    // 2. Memanggil AI untuk membuat README
+    // 2. Generate README (hanya jika belum ada)
     const aiSpinner = ora('AI sedang merancang dan menulis README.md...').start();
     try {
       const readmePath = path.join(process.cwd(), 'README.md');
@@ -42,10 +51,10 @@ program
       }
     } catch (error) {
       aiSpinner.fail(chalk.red('Gagal membuat dokumentasi AI. Pastikan API Key valid.'));
-      return; 
+      return;
     }
 
-    // 3. Inisialisasi Git & Auto Commit
+    // 3. Git init & commit
     const gitSpinner = ora('Menyiapkan Git Repository & Commit...').start();
     try {
       await setupGitAndCommit();
@@ -58,24 +67,82 @@ program
       }
     }
 
-    // 4 & 5. Kompresi ZIP sekaligus Upload ke Google Drive
+    // 4. Kompresi ZIP
     const zipSpinner = ora('Mengompres file proyek (mengabaikan node_modules)...').start();
+    let zipPath: string;
     try {
-      // Buat ZIP
-      const zipPath = await zipProject();
+      zipPath = await zipProject();
       zipSpinner.succeed(`File backup bersih berhasil dibuat: ${chalk.yellow(path.basename(zipPath))}`);
-      
-      // Langsung Terbangkan ke Drive
-      const uploadSpinner = ora('Menerbangkan file backup ke Google Drive...').start();
-      const driveLink = await uploadToDrive(zipPath);
-      uploadSpinner.succeed(`Backup otomatis diamankan di Cloud! ☁️\n   Cek di sini: ${chalk.blue.underline(driveLink)}`);
-      
-    } catch (error: any) {
-      zipSpinner.fail(chalk.red('Gagal memproses backup atau upload ke Cloud.'));
-      console.log(chalk.redBright(`\n[DEBUG ERROR DETAIL]: ${error.stack || error.message || error}\n`));
+    } catch (error) {
+      zipSpinner.fail(chalk.red('Gagal mengompres proyek.'));
+      return;
     }
 
-    console.log(chalk.cyan.bold('\n✨ Semua proses selesai! Proyek Anda aman, rpi, dan siap jadi portofolio.\n'));
+    // 5. Upload ke Google Drive dengan pengecekan duplikat
+    try {
+      const authSpinner = ora('Mempersiapkan koneksi ke Google Drive...').start();
+      const authClient = await getAuthenticatedClient();
+      authSpinner.succeed('Koneksi Google Drive berhasil.');
+
+      const fileName = path.basename(zipPath);
+      const fileId = await findFileInDrive(authClient, fileName);
+
+      let finalFileName = fileName;
+      let shouldUpload = true;
+
+      if (fileId) {
+        console.log(chalk.yellow(`\n⚠️  File "${fileName}" sudah ada di Google Drive.`));
+
+        const rl = readline.createInterface({
+          input: process.stdin,
+          output: process.stdout,
+        });
+
+        const answer = await new Promise<string>((resolve) => {
+          rl.question(
+            chalk.cyan('Pilih aksi: (o)verwrite, (s)kip, (r)ename dengan timestamp: '),
+            (ans) => {
+              rl.close();
+              resolve(ans.toLowerCase().trim());
+            }
+          );
+        });
+
+        if (answer === 'o' || answer === 'overwrite') {
+          console.log(chalk.yellow(`🗑️  Menghapus file lama (ID: ${fileId})...`));
+          await deleteFileInDrive(authClient, fileId);
+          console.log(chalk.green('✅ File lama berhasil dihapus.'));
+        } else if (answer === 'r' || answer === 'rename') {
+          const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+          const ext = path.extname(fileName);
+          const base = path.basename(fileName, ext);
+          finalFileName = `${base}-${timestamp}${ext}`;
+          console.log(chalk.blue(`📝 Nama file baru: ${finalFileName}`));
+        } else {
+          console.log(chalk.gray('⏭️  Melewati upload. File tidak diunggah.'));
+          shouldUpload = false;
+        }
+      }
+
+      if (shouldUpload) {
+        const uploadSpinner = ora(`Mengunggah ${finalFileName} ke Google Drive...`).start();
+        const driveLink = await uploadToDrive(
+          authClient,
+          zipPath,
+          finalFileName,
+          (percent: number) => {
+            uploadSpinner.text = `Mengunggah ${finalFileName}... ${percent}%`;
+          }
+        );
+        uploadSpinner.succeed(`Backup otomatis diamankan di Cloud! ☁️\n   Cek di sini: ${chalk.blue.underline(driveLink)}`);
+      } else {
+        console.log(chalk.gray('💡 File ZIP tetap tersimpan di lokal.'));
+      }
+    } catch (error: any) {
+      console.log(chalk.redBright(`\n[ERROR UPLOAD]: ${error.stack || error.message || error}\n`));
+    }
+
+    console.log(chalk.cyan.bold('\n✨ Semua proses selesai! Proyek Anda aman, rapi, dan siap jadi portofolio.\n'));
   });
 
 program.parse(process.argv);
